@@ -1,4 +1,12 @@
 local _dir = debug.getinfo(1, "S").source:sub(2):match("(.*[/\\])") or "./"
+local function lrequire(name)
+    local key = _dir .. name
+    if not package.loaded[key] then
+        package.loaded[key] = assert(loadfile(_dir .. name .. ".lua"))()
+    end
+    return package.loaded[key]
+end
+local Letters = lrequire("letters")
 
 -- ---------------------------------------------------------------------------
 -- Word lists
@@ -11,8 +19,7 @@ local _dir = debug.getinfo(1, "S").source:sub(2):match("(.*[/\\])") or "./"
 -- English used to be a single 716-word table inlined right here, serving as
 -- the answer pool AND as the whole notion of "is that even a word", so
 -- ordinary guesses (STARE, TEARS, IRATE, NOTES, FJORD, LYMPH...) came back
--- as "not a word". guesses_<lang>.lua is optional -- French ships answers
--- only for now and behaves exactly as before.
+-- as "not a word". Both supported languages now have additional guess lists.
 --
 -- Loaded lazily: the English guess list alone is several thousand words, and
 -- a player who never opens Wordle should not pay for it.
@@ -43,7 +50,7 @@ end
 local function filterWords(list, len)
     local out = {}
     for _, w in ipairs(list) do
-        if #w == len then out[#out + 1] = w end
+        if #Letters.split(w) == len then out[#out + 1] = w end
     end
     return out
 end
@@ -60,7 +67,7 @@ end
 
 local WORD_LEN   = 5
 local MAX_TRIES  = 6
-local LANG_ORDER = { "en", "fr" }
+local LANG_ORDER = { "en", "de" }
 
 -- Cell result states
 local STATE_EMPTY   = 0
@@ -79,7 +86,7 @@ WordleBoard.__index = WordleBoard
 function WordleBoard:new(opts)
     opts = opts or {}
     local obj = setmetatable({
-        lang      = opts.lang     or "en",
+        lang      = opts.lang == "de" and "de" or "en",
         word_len  = opts.word_len or WORD_LEN,
         max_tries = MAX_TRIES,
         secret    = "",
@@ -112,8 +119,7 @@ end
 
 function WordleBoard:newGame(secret, puzzle_date)
     if secret then
-        assert(type(secret) == "string" and secret:match("^[A-Z][A-Z][A-Z][A-Z][A-Z]$"),
-            "Answer must be five uppercase letters")
+        assert(Letters.isWord(secret, self.lang), "Answer must be five playable letters")
         self.word_len = WORD_LEN
         self.secret = secret
     else
@@ -132,7 +138,10 @@ end
 function WordleBoard:typeLetter(letter)
     if self.won or self.lost then return end
     if #self.current >= self.word_len then return end
-    self.current[#self.current + 1] = letter:upper()
+    if type(letter) ~= "string" then return end
+    letter = Letters.upper(letter)
+    if not Letters.isLetter(letter, self.lang) then return end
+    self.current[#self.current + 1] = letter
 end
 
 -- Delete last letter
@@ -186,12 +195,13 @@ end
 
 function WordleBoard:_evaluate(guess)
     local states  = {}
-    local secret  = self.secret
+    local secret  = Letters.split(self.secret)
+    guess = Letters.split(guess)
     local used    = {}  -- secret letter positions already matched
 
     -- First pass: correct positions
     for i = 1, self.word_len do
-        if guess:sub(i,i) == secret:sub(i,i) then
+        if guess[i] == secret[i] then
             states[i] = STATE_CORRECT
             used[i]   = true
         else
@@ -202,9 +212,9 @@ function WordleBoard:_evaluate(guess)
     -- Second pass: present but wrong position
     for i = 1, self.word_len do
         if states[i] ~= STATE_CORRECT then
-            local ch = guess:sub(i, i)
+            local ch = guess[i]
             for j = 1, self.word_len do
-                if not used[j] and secret:sub(j,j) == ch then
+                if not used[j] and secret[j] == ch then
                     states[i] = STATE_PRESENT
                     used[j]   = true
                     break
@@ -220,13 +230,15 @@ end
 
 function WordleBoard:rememberCurrent()
     if self.puzzle_date then
-        self.dated_games[self.puzzle_date] = self:_serializePuzzle()
+        self.dated_games[self.lang .. ":" .. self.puzzle_date] = self:_serializePuzzle()
     end
 end
 
-function WordleBoard:selectDate(date, solution)
+function WordleBoard:selectDate(date, solution, lang)
+    lang = lang or "en"
+    assert(lang == "en" or lang == "de", "Unsupported puzzle language")
     self:rememberCurrent()
-    local saved = self.dated_games[date]
+    local saved = self.dated_games[lang .. ":" .. date]
     if saved then
         -- Date snapshots contain historical counters; retain the current totals.
         local wins, losses, streak = self.wins, self.losses, self.streak
@@ -236,13 +248,14 @@ function WordleBoard:selectDate(date, solution)
     end
     if not solution then return false end
 
-    self.lang = "en"
+    self.lang = lang
     self:newGame(solution, date)
     self:rememberCurrent()
     return true
 end
 
 function WordleBoard:randomGame(lang)
+    assert(lang == "en" or lang == "de", "Unsupported puzzle language")
     self:rememberCurrent()
     self.lang = lang
     self:newGame()
@@ -280,12 +293,22 @@ end
 
 function WordleBoard:load(data)
     if not self:_loadPuzzle(data) then return false end
-    self.dated_games = type(data.dated_games) == "table" and data.dated_games or {}
+    self.dated_games = {}
+    for key, saved in pairs(type(data.dated_games) == "table" and data.dated_games or {}) do
+        if type(key) == "string" and type(saved) == "table"
+                and (saved.lang == nil or saved.lang == "en" or saved.lang == "de") then
+            -- Existing English saves used bare dates; provider histories must not collide.
+            local dated_key = key
+            if key:match("^%d%d%d%d%-%d%d%-%d%d$") then dated_key = "en:" .. key end
+            self.dated_games[dated_key] = saved
+        end
+    end
     return true
 end
 
 function WordleBoard:_loadPuzzle(data)
     if type(data) ~= "table" or not data.secret then return false end
+    if data.lang and data.lang ~= "en" and data.lang ~= "de" then return false end
     self.lang      = data.lang      or "en"
     self.word_len  = data.word_len  or WORD_LEN
     self.secret    = data.secret    or ""

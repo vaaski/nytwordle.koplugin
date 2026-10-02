@@ -23,10 +23,13 @@ local T               = require("ffi/util").template
 
 local ScreenBase        = require("screen_base")
 local MenuHelper        = require("menu_helper")
-local KeyboardWidget    = lrequire("common/keyboard_widget")
+local KeyboardWidget    = lrequire("keyboard_widget")
 local WordleBoard       = lrequire("board")
 local WordleBoardWidget = lrequire("board_widget")
 local NYT               = lrequire("nyt")
+local Spiegel           = lrequire("spiegel")
+local Dates             = lrequire("dates")
+local PROVIDERS         = { nyt = NYT, spiegel = Spiegel }
 
 local DeviceScreen = Device.screen
 
@@ -40,40 +43,51 @@ NYTWordle — Rules
 Guess the secret 5-letter word in 6 attempts.
 
 After each guess:
-• Green tile — the letter is in the correct position.
-• Yellow tile — the letter is in the word but in the wrong position.
-• Grey tile — the letter is not in the word.
+• Dark tile — the letter is in the correct position.
+• Medium grey tile — the letter is in the word but in the wrong position.
+• Light grey tile — the letter is not in the word.
 
 Use the on-screen keyboard to enter letters. Press ↵ to submit a guess, ⌫ to delete.
 The keyboard shows the status of each letter used so far.
+
+Choose NYT for English puzzles or SPIEGEL for German puzzles. Each mode
+offers today's puzzle, past puzzles, and offline random words.
+In German, Ä, Ö, Ü and ß each count as one distinct letter.
 ]])
 
-local GAME_RULES_FR = [[
-NYTWordle — Règles
+local GAME_RULES_DE = [[
+NYTWordle — Regeln
 
-Devinez le mot secret de 5 lettres en 6 tentatives.
+Errate das geheime Wort mit 5 Buchstaben in 6 Versuchen.
 
-Après chaque proposition :
-• Case verte — la lettre est à la bonne position.
-• Case jaune — la lettre est dans le mot mais à la mauvaise position.
-• Case grise — la lettre n'est pas dans le mot.
+Nach jedem Versuch:
+• Dunkles Feld — der Buchstabe steht an der richtigen Stelle.
+• Mittleres Grau — der Buchstabe ist im Wort, aber an der falschen Stelle.
+• Helles Grau — der Buchstabe ist nicht im Wort.
 
-Utilisez le clavier à l'écran pour entrer des lettres. Appuyez sur ↵ pour valider, sur ⌫ pour effacer.
-Le clavier affiche l'état de chaque lettre utilisée.
+Gib Buchstaben über die Bildschirmtastatur ein. ↵ bestätigt, ⌫ löscht.
+Die Tastatur zeigt die bisher bekannten Buchstaben an.
+Ä, Ö, Ü und ß zählen jeweils als ein eigener Buchstabe.
+
+NYT bietet englische Rätsel, SPIEGEL deutsche. Beide Modi unterstützen
+das heutige Rätsel, das Archiv und Offline-Zufallswörter.
 ]]
 
 local WordleScreen = ScreenBase:extend{}
 
 function WordleScreen:init()
     local state = self.plugin:loadState()
-    local lang  = self.plugin:getSetting("lang", "en")
-    self.board = WordleBoard:new{ lang = lang }
+    self.mode = self.plugin:getSetting("mode", "nyt")
+    if not PROVIDERS[self.mode] then self.mode = "nyt" end
+    local provider = PROVIDERS[self.mode]
+    self.board = WordleBoard:new{ lang = provider.lang }
     self.board:load(state)
-    if self.board.lang ~= lang then self.board:randomGame(lang) end
+    if self.board.lang ~= provider.lang then self.board:randomGame(provider.lang) end
     ScreenBase.init(self)
-    if lang == "en" then
+    if not self.plugin:getSetting("offline", false) then
+        local mode = self.mode
         UIManager:nextTick(function()
-            if not self.closed and self.plugin:getSetting("lang", "en") == "en" then
+            if not self.closed and self.mode == mode and not self.plugin:getSetting("offline", false) then
                 self:onToday()
             end
         end)
@@ -86,6 +100,9 @@ end
 
 function WordleScreen:closeScreen()
     self.closed = true
+    -- A cancelled/unfinished provider switch still belongs to the visible board.
+    self.mode = self.board.lang == "de" and "spiegel" or "nyt"
+    self.plugin:saveSetting("mode", self.mode)
     ScreenBase.closeScreen(self)
 end
 
@@ -103,23 +120,25 @@ function WordleScreen:buildLayout()
     -- Top bar
     local title_bar = self:buildTitleBar(_("NYTWordle"), function()
         local items = {}
-        if self.board.lang == "en" then
-            items[#items + 1] = {
-                text = T(_("Today's Wordle (%1)"), NYT.today()),
-                callback = function() self:onToday() end,
-            }
-            items[#items + 1] = {
-                text = _("Play another day's Wordle"),
-                callback = function() self:openDateInput() end,
-            }
-            items[#items + 1] = {
-                text = _("Offline random word"), callback = function() self:onNewGame() end,
-            }
-        else
-            items[#items + 1] = { text = _("New game"), callback = function() self:onNewGame() end }
-        end
-        items[#items + 1] = { text = self:_langLabel(), callback = function() self:openLangMenu() end }
-        items[#items + 1] = self:makeRulesButtonConfig(GAME_RULES_EN, GAME_RULES_FR)
+        items[#items + 1] = {
+            text = T(_("Today's Wordle (%1)"), self:today()),
+            callback = function() self:onToday() end,
+        }
+        items[#items + 1] = {
+            text = _("Play another day's Wordle"),
+            callback = function() self:openDateInput() end,
+        }
+        items[#items + 1] = {
+            text = _("Offline random word"), callback = function() self:onNewGame(true) end,
+        }
+        items[#items + 1] = {
+            text = T(_("Game mode: %1"), PROVIDERS[self.mode].name),
+            callback = function() self:openModeMenu() end,
+        }
+        items[#items + 1] = {
+            text = _("Rules"),
+            callback = function() self:showRules(_.lang() == "de" and GAME_RULES_DE or GAME_RULES_EN) end,
+        }
         return items
     end)
 
@@ -146,7 +165,7 @@ function WordleScreen:buildLayout()
 
     self.keyboard_widget = KeyboardWidget.build{
         width     = btn_width,
-        layout    = (self.board.lang == "fr") and "azerty" or "qwerty",
+        layout    = self.board.lang == "de" and "qwertz" or "qwerty",
         backspace = true,
         enter     = true,
         onKey     = function(k) self:onVirtualKey(k) end,
@@ -186,6 +205,7 @@ function WordleScreen:buildLayout()
 end
 
 function WordleScreen:onVirtualKey(key)
+    if self.fetching then return end
     if key == "↵" then
         local result = self.board:submit()
         if result == "short" then
@@ -208,12 +228,15 @@ function WordleScreen:onVirtualKey(key)
     end
 end
 
-function WordleScreen:onNewGame()
-    self.board:randomGame(self.plugin:getSetting("lang", "en"))
+function WordleScreen:onNewGame(explicit)
+    if self.fetching then return end
+    self.plugin:saveSetting("offline", explicit == true)
+    self.board:randomGame(PROVIDERS[self.mode].lang)
     self:saveAndRefresh()
 end
 
 function WordleScreen:saveAndRefresh()
+    self.plugin:saveSetting("mode", self.mode)
     self.plugin:saveState(self:serializeState())
     self:buildLayout()
     UIManager:setDirty(self, function() return "ui", self.dimen end)
@@ -221,17 +244,31 @@ end
 
 -- - daily puzzles ------------------------------------------------------------
 
+function WordleScreen:today()
+    if self.mode == "spiegel" and self.spiegel_today then
+        -- Advance the authoritative server date as the device clock advances.
+        return Dates.advance(self.spiegel_today, self.spiegel_device_date, Spiegel.today())
+    end
+    return PROVIDERS[self.mode].today()
+end
+
 function WordleScreen:onToday(on_cancel)
-    self:playDate(NYT.today(), on_cancel)
+    if self.mode == "spiegel" then
+        self:playDate(nil, on_cancel)
+    else
+        self:playDate(self:today(), on_cancel)
+    end
 end
 
 function WordleScreen:playDate(date, on_cancel)
     if self.closed or self.fetching then return end
-    if not NYT.isValidDate(date) then
+    local provider = PROVIDERS[self.mode]
+    if date and not provider.isValidDate(date, self:today()) then
         UIManager:show(InfoMessage:new{ text = _("Enter a valid date in YYYY-MM-DD format, no later than today.") })
         return
     end
-    if self.board:selectDate(date) then
+    if date and self.board:selectDate(date, nil, provider.lang) then
+        self.plugin:saveSetting("offline", false)
         self:saveAndRefresh()
         return
     end
@@ -239,9 +276,9 @@ function WordleScreen:playDate(date, on_cancel)
     self.fetching = true
     local Trapper = require("ui/trapper")
     Trapper:wrap(function()
-        local completed, solution, err = Trapper:dismissableRunInSubprocess(function()
-            return NYT.fetch(date)
-        end, T(_("Loading Wordle for %1…"), date))
+        local completed, solution, err, puzzle_date = Trapper:dismissableRunInSubprocess(function()
+            return provider.fetch(date)
+        end, T(_("Loading %1 Wordle…"), provider.name))
         self.fetching = false
         if self.closed then return end
         if not completed then
@@ -249,13 +286,24 @@ function WordleScreen:playDate(date, on_cancel)
             return
         end
         if solution then
-            self.board:selectDate(date, solution)
+            if not date and provider == Spiegel then
+                self.spiegel_today = puzzle_date
+                self.spiegel_device_date = Spiegel.today()
+            end
+            self.board:selectDate(puzzle_date or date, solution, provider.lang)
+            self.plugin:saveSetting("offline", false)
             self:saveAndRefresh()
         else
+            -- An unavailable server must not hide a previously downloaded daily game.
+            if not date and self.board:selectDate(self:today(), nil, provider.lang) then
+                self.plugin:saveSetting("offline", false)
+                self:saveAndRefresh()
+                return
+            end
             self:onNewGame()
             UIManager:show(InfoMessage:new{
-                text = T(_("Could not load NYT Wordle for %1 (%2). Playing an offline random word instead."),
-                    date, err or _("No response")),
+                text = T(_("Could not load %1 Wordle (%2). Playing an offline random word instead."),
+                    provider.name, err or _("No response")),
             })
         end
     end)
@@ -265,14 +313,15 @@ function WordleScreen:openDateInput()
     local dialog
     dialog = InputDialog:new{
         title = _("Play another day's Wordle"),
-        input = self.board.puzzle_date or NYT.today(),
+        input = self.board.puzzle_date or self:today(),
         input_type = "string",
-        description = T(_("YYYY-MM-DD — device date: %1"), NYT.today()),
+        description = T(_("YYYY-MM-DD — %1 date: %2"), PROVIDERS[self.mode].name, self:today())
+            .. "\n" .. T(_("Archive starts on %1."), PROVIDERS[self.mode].first_date),
         buttons = { {
             { text = _("Cancel"), id = "close", callback = function() UIManager:close(dialog) end },
             { text = _("Play"), is_enter_default = true, callback = function()
                 local date = dialog:getInputValue()
-                if not NYT.isValidDate(date) then
+                if not PROVIDERS[self.mode].isValidDate(date, self:today()) then
                     UIManager:show(InfoMessage:new{
                         text = _("Enter a valid date in YYYY-MM-DD format, no later than today."),
                     })
@@ -287,30 +336,25 @@ function WordleScreen:openDateInput()
     dialog:onShowKeyboard()
 end
 
-function WordleScreen:openLangMenu()
+function WordleScreen:openModeMenu()
+    if self.fetching then return end
     local items = {
-        { id = "en", text = _("English") },
-        { id = "fr", text = _("Français") },
+        { id = "nyt", text = _("NYT (English)") },
+        { id = "spiegel", text = _("SPIEGEL (German)") },
     }
     MenuHelper.openPickerMenu{
-        title      = _("Language"),
+        title      = _("Game mode"),
         items      = items,
-        current_id = self.plugin:getSetting("lang", "en"),
+        current_id = self.mode,
         parent     = self,
-        on_select  = function(lang)
-            local previous_lang = self.plugin:getSetting("lang", "en")
-            self.plugin:saveSetting("lang", lang)
-            if self.lang_btn then
-                self.lang_btn:setText(self:_langLabel(), self.lang_btn.width)
-            end
-            if lang == "en" then
-                self:onToday(function()
-                    self.plugin:saveSetting("lang", previous_lang)
-                    self:saveAndRefresh()
-                end)
-            else
-                self:onNewGame()
-            end
+        on_select  = function(mode)
+            if self.fetching or self.closed or mode == self.mode then return end
+            local previous_mode = self.mode
+            self.mode = mode
+            self:onToday(function()
+                self.mode = previous_mode
+                self:saveAndRefresh()
+            end)
         end,
     }
 end
@@ -337,15 +381,12 @@ function WordleScreen:updateStatus(msg)
     end
     if self.board.puzzle_date then
         status = self.board.puzzle_date .. " — " .. status
-    elseif self.board.lang == "en" then
+    else
         status = _("Offline random word") .. " — " .. status
     end
+    local name = self.board.lang == "de" and Spiegel.name or NYT.name
+    status = name .. " — " .. status
     ScreenBase.updateStatus(self, status)
-end
-
-function WordleScreen:_langLabel()
-    local lang = self.plugin:getSetting("lang", "en")
-    return lang == "fr" and "FR" or "EN"
 end
 
 return WordleScreen

@@ -186,9 +186,4 @@ describe("English word lists", function()
         assert.is_true(#guesses > 5000)
     end)
 
-    it("leaves French alone -- it ships answers only and has no guess file", function()
-        local b = Board:new{ lang = "fr" }
-        assert.are.equal(5, #b.secret)
-        assert.are.equal("invalid", guess(Board:new{ lang = "fr" }, "ZZZZZ"))
-    end)
 end)

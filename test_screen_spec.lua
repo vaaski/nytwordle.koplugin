@@ -8,7 +8,7 @@ describe("NYT screen workflow", function()
         "ui/uimanager", "ui/widget/verticalgroup", "ui/widget/verticalspan",
         "ui/widget/infomessage", "ui/widget/inputdialog", "i18n", "ffi/util",
         "screen_base", "menu_helper", "ui/trapper",
-        DIR .. "common/keyboard_widget", DIR .. "board_widget", DIR .. "nyt",
+         DIR .. "keyboard_widget", DIR .. "board_widget", DIR .. "nyt", DIR .. "spiegel",
     }
 
     before_each(function()
@@ -62,14 +62,25 @@ describe("NYT screen workflow", function()
             return responses[date], "timeout"
         end
         package.loaded[DIR .. "nyt"] = nyt
+        local spiegel = assert(loadfile(DIR .. "spiegel.lua"))()
+        spiegel.today = function() return "2026-10-02" end
+        spiegel.fetch = function(date)
+            local key = "de:" .. (date or "today")
+            requests[#requests + 1] = key
+            return responses[key], "timeout", date or "2026-10-02"
+        end
+        package.loaded[DIR .. "spiegel"] = spiegel
         Screen = assert(loadfile(DIR .. "screen.lua"))()
         Screen.buildLayout = function() end
         plugin = {
-            lang = "en",
+            mode = "nyt",
             loadState = function(self) return self.state end,
             saveState = function(self, state) self.state = state end,
-            getSetting = function(self) return self.lang end,
-            saveSetting = function(self, _, lang) self.lang = lang end,
+            getSetting = function(self, key, default)
+                if self[key] == nil then return default end
+                return self[key]
+            end,
+            saveSetting = function(self, key, value) self[key] = value end,
         }
     end)
 
@@ -98,7 +109,7 @@ describe("NYT screen workflow", function()
         assert.is_nil(screen.board.puzzle_date)
         assert.are.equal(5, #screen.board.secret)
         assert.is_truthy(messages[1].text:find("offline random word", 1, true))
-        assert.is_nil(plugin.state.dated_games["2024-01-02"])
+        assert.is_nil(plugin.state.dated_games["en:2024-01-02"])
         screen:closeScreen()
         responses["2024-01-02"] = "ABOUT"
         local reopened = Screen:new{ plugin = plugin }
@@ -120,22 +131,21 @@ describe("NYT screen workflow", function()
         assert.are.equal("2024-01-01", screen.board.puzzle_date)
     end)
 
-    it("does not fetch after closing or when opening French", function()
+    it("does not fetch after closing or when opening explicit offline play", function()
         local screen = Screen:new{ plugin = plugin }
         screen:closeScreen()
         queued[1]()
         assert.are.equal(0, #requests)
-        plugin.lang = "fr"
+        plugin.offline = true
         Screen:new{ plugin = plugin }
         assert.are.equal(1, #queued)
     end)
 
-    it("does not replace French if language changes before the startup callback", function()
+    it("does not replace offline play selected before the startup callback", function()
         local screen = Screen:new{ plugin = plugin }
-        plugin.lang = "fr"
-        screen:onNewGame()
+        screen:onNewGame(true)
         queued[1]()
-        assert.are.equal("fr", screen.board.lang)
+        assert.are.equal("en", screen.board.lang)
         assert.are.equal(0, #requests)
     end)
 
@@ -152,17 +162,86 @@ describe("NYT screen workflow", function()
         assert.are.equal(0, #messages)
     end)
 
-    it("restores the French preference when an English language switch is cancelled", function()
-        plugin.lang = "fr"
+    it("restores the provider and offline preference when switching is cancelled", function()
+        plugin.mode = "spiegel"
+        plugin.offline = true
         local screen = Screen:new{ plugin = plugin }
         screen.board:typeLetter("A")
         local picker
         package.loaded["menu_helper"].openPickerMenu = function(opts) picker = opts end
         package.loaded["ui/trapper"].dismissableRunInSubprocess = function() return false end
-        screen:openLangMenu()
-        picker.on_select("en")
-        assert.are.equal("fr", plugin.lang)
-        assert.are.equal("fr", screen.board.lang)
+        screen:openModeMenu()
+        picker.on_select("nyt")
+        assert.are.equal("spiegel", plugin.mode)
+        assert.is_true(plugin.offline)
+        assert.are.equal("de", screen.board.lang)
         assert.are.same({ "A" }, screen.board.current)
+    end)
+
+    it("opens SPIEGEL's server date and resumes its cached progress", function()
+        plugin.mode = "spiegel"
+        package.loaded[DIR .. "spiegel"].today = function() return "2026-09-30" end
+        responses["de:today"] = "GRÜNE"
+        local screen = Screen:new{ plugin = plugin }
+        queued[1]()
+        assert.are.equal("2026-10-02", screen.board.puzzle_date)
+        assert.are.equal("2026-10-02", screen:today())
+        screen.board:typeLetter("Ü")
+        screen:closeScreen()
+        local reopened = Screen:new{ plugin = plugin }
+        queued[2]()
+        assert.are.same({ "Ü" }, reopened.board.current)
+        assert.are.equal("de", reopened.board.lang)
+    end)
+
+    it("uses a cached German daily game when the current endpoint is unavailable", function()
+        plugin.mode = "spiegel"
+        responses["de:2026-10-02"] = "GRÜNE"
+        local screen = Screen:new{ plugin = plugin }
+        screen:playDate("2026-10-02")
+        screen.board:typeLetter("G")
+        queued[1]()
+        assert.are.equal("2026-10-02", screen.board.puzzle_date)
+        assert.are.same({ "G" }, screen.board.current)
+        assert.is_false(plugin.offline)
+        assert.are.equal(0, #messages)
+    end)
+
+    it("advances the server date across device midnight without losing the clock offset", function()
+        plugin.mode = "spiegel"
+        local device_date = "2026-09-30"
+        package.loaded[DIR .. "spiegel"].today = function() return device_date end
+        responses["de:today"] = "GRÜNE"
+        local screen = Screen:new{ plugin = plugin }
+        queued[1]()
+        device_date = "2026-10-01"
+        assert.are.equal("2026-10-03", screen:today())
+        screen:playDate("2026-10-02")
+        assert.are.equal("2026-10-02", screen.board.puzzle_date)
+        assert.are.equal(1, #requests)
+    end)
+
+    it("keeps explicit German offline games offline after reopening", function()
+        plugin.mode = "spiegel"
+        local screen = Screen:new{ plugin = plugin }
+        screen:onNewGame(true)
+        screen.board:typeLetter("Ä")
+        queued[1]()
+        screen:closeScreen()
+        local reopened = Screen:new{ plugin = plugin }
+        assert.are.same({ "Ä" }, reopened.board.current)
+        assert.is_nil(reopened.board.puzzle_date)
+        assert.are.equal(1, #queued)
+        assert.are.equal(0, #requests)
+    end)
+
+    it("falls back to German words without making the fallback an explicit offline preference", function()
+        plugin.mode = "spiegel"
+        local screen = Screen:new{ plugin = plugin }
+        queued[1]()
+        assert.are.equal("de", screen.board.lang)
+        assert.is_nil(screen.board.puzzle_date)
+        assert.is_false(plugin.offline)
+        assert.is_truthy(messages[1].text:find("SPIEGEL", 1, true))
     end)
 end)

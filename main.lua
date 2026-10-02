@@ -12,7 +12,7 @@ end
 local PluginBase   = require("plugin_base")
 local _            = require("gettext")
 
-require("i18n").extend(lrequire("i18n_fr"))
+require("i18n").extend(lrequire("translations"))
 local WordleScreen = lrequire("screen")
 
 local NYTWordle = PluginBase:extend{
