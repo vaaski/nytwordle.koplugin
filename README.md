@@ -1,6 +1,10 @@
-# wordle.koplugin
+# NYTWordle
 
-A Wordle plugin for [KOReader](https://github.com/koreader/koreader).
+A Wordle plugin for [KOReader](https://github.com/koreader/koreader), forked as NYTWordle.
+
+Install it in `plugins/nytwordle.koplugin/`. Its plugin ID is `nytwordle`, so its
+menu entry, settings, and session statistics are separate from the original
+`wordle` plugin. Both plugins can be installed together.
 
 
 ## Screenshot

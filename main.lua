@@ -15,14 +15,14 @@ local _            = require("gettext")
 require("i18n").extend(lrequire("i18n_fr"))
 local WordleScreen = lrequire("screen")
 
-local Wordle = PluginBase:extend{
-    name      = "wordle",
-    menu_text = _("Wordle"),
+local NYTWordle = PluginBase:extend{
+    name      = "nytwordle",
+    menu_text = _("NYTWordle"),
     menu_hint = "tools",
 }
 
-function Wordle:createScreen()
+function NYTWordle:createScreen()
     return WordleScreen:new{ plugin = self }
 end
 
-return Wordle
+return NYTWordle

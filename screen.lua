@@ -35,7 +35,7 @@ local DeviceScreen = Device.screen
 -- ---------------------------------------------------------------------------
 
 local GAME_RULES_EN = _([[
-Wordle — Rules
+NYTWordle — Rules
 
 Guess the secret 5-letter word in 6 attempts.
 
@@ -49,7 +49,7 @@ The keyboard shows the status of each letter used so far.
 ]])
 
 local GAME_RULES_FR = [[
-Wordle — Règles
+NYTWordle — Règles
 
 Devinez le mot secret de 5 lettres en 6 tentatives.
 
@@ -101,7 +101,7 @@ function WordleScreen:buildLayout()
     self.status_text:setMaxWidth(btn_width)
 
     -- Top bar
-    local title_bar = self:buildTitleBar(_("Wordle"), function()
+    local title_bar = self:buildTitleBar(_("NYTWordle"), function()
         local items = {}
         if self.board.lang == "en" then
             items[#items + 1] = {
