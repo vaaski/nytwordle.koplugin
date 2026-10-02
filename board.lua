@@ -93,6 +93,7 @@ function WordleBoard:new(opts)
         wins      = 0,
         losses    = 0,
         streak    = 0,
+        dated_games = {},
     }, self)
     obj:_newWord()
     return obj
@@ -109,8 +110,16 @@ function WordleBoard:_newWord()
     self.secret = list[math.random(#list)]
 end
 
-function WordleBoard:newGame()
-    self:_newWord()
+function WordleBoard:newGame(secret, puzzle_date)
+    if secret then
+        assert(type(secret) == "string" and secret:match("^[A-Z][A-Z][A-Z][A-Z][A-Z]$"),
+            "Answer must be five uppercase letters")
+        self.word_len = WORD_LEN
+        self.secret = secret
+    else
+        self:_newWord()
+    end
+    self.puzzle_date = puzzle_date
     self.guesses  = {}
     self.current  = {}
     self.row      = 1
@@ -139,7 +148,7 @@ function WordleBoard:submit()
     if #self.current < self.word_len then return "short" end
 
     local guess_str = table.concat(self.current)
-    if not isValidWord(self.lang, guess_str) then return "invalid" end
+    if guess_str ~= self.secret and not isValidWord(self.lang, guess_str) then return "invalid" end
     local states    = self:_evaluate(guess_str)
     self.guesses[#self.guesses + 1] = {
         letters = { table.unpack(self.current) },
@@ -207,15 +216,56 @@ function WordleBoard:_evaluate(guess)
     return states
 end
 
+-- - dated puzzles ------------------------------------------------------------
+
+function WordleBoard:rememberCurrent()
+    if self.puzzle_date then
+        self.dated_games[self.puzzle_date] = self:_serializePuzzle()
+    end
+end
+
+function WordleBoard:selectDate(date, solution)
+    self:rememberCurrent()
+    local saved = self.dated_games[date]
+    if saved then
+        -- Date snapshots contain historical counters; retain the current totals.
+        local wins, losses, streak = self.wins, self.losses, self.streak
+        self:_loadPuzzle(saved)
+        self.wins, self.losses, self.streak = wins, losses, streak
+        return true
+    end
+    if not solution then return false end
+
+    self.lang = "en"
+    self:newGame(solution, date)
+    self:rememberCurrent()
+    return true
+end
+
+function WordleBoard:randomGame(lang)
+    self:rememberCurrent()
+    self.lang = lang
+    self:newGame()
+end
+
 -- ---------------------------------------------------------------------------
 -- Persistence
 -- ---------------------------------------------------------------------------
 
 function WordleBoard:serialize()
+    self:rememberCurrent()
+    -- Preserve the original top-level board fields for existing saves.
+    local state = self:_serializePuzzle()
+    state.dated_games = self.dated_games
+    return state
+end
+
+function WordleBoard:_serializePuzzle()
     return {
         lang      = self.lang,
         word_len  = self.word_len,
         secret    = self.secret,
+        puzzle_date = self.puzzle_date,
         guesses   = self.guesses,
         current   = self.current,
         row       = self.row,
@@ -229,10 +279,17 @@ function WordleBoard:serialize()
 end
 
 function WordleBoard:load(data)
+    if not self:_loadPuzzle(data) then return false end
+    self.dated_games = type(data.dated_games) == "table" and data.dated_games or {}
+    return true
+end
+
+function WordleBoard:_loadPuzzle(data)
     if type(data) ~= "table" or not data.secret then return false end
     self.lang      = data.lang      or "en"
     self.word_len  = data.word_len  or WORD_LEN
     self.secret    = data.secret    or ""
+    self.puzzle_date = data.puzzle_date
     self.guesses   = data.guesses   or {}
     self.current   = data.current   or {}
     self.row       = data.row       or 1

@@ -80,6 +80,13 @@ describe("WordleBoard", function()
             b:submit()
             assert.are.equal("done", b:submit())
         end)
+
+        it("does not award extra present tiles for repeated letters", function()
+            local b = Board:new()
+            b.secret = "APPLE"
+            assert.are.same({ Board.STATE_PRESENT, Board.STATE_PRESENT,
+                Board.STATE_CORRECT, Board.STATE_ABSENT, Board.STATE_PRESENT }, b:_evaluate("PAPAL"))
+        end)
     end)
 
     describe("newGame", function()
@@ -185,4 +192,3 @@ describe("English word lists", function()
         assert.are.equal("invalid", guess(Board:new{ lang = "fr" }, "ZZZZZ"))
     end)
 end)
-
